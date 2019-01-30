@@ -269,103 +269,6 @@ static int write_loop(snd_pcm_t *handle,
 }
 
 /*
- *   Transfer method - write and wait for room in buffer using poll
- */
-static int wait_for_poll(snd_pcm_t *handle, struct pollfd *ufds, unsigned int count)
-{
-        unsigned short revents;
-        while (1) {
-                poll(ufds, count, -1);
-                snd_pcm_poll_descriptors_revents(handle, ufds, count, &revents);
-                if (revents & POLLERR)
-                        return -EIO;
-                if (revents & POLLOUT)
-                        return 0;
-        }
-}
-
-static int write_and_poll_loop(snd_pcm_t *handle,
-                               signed short *samples,
-                               snd_pcm_channel_area_t *areas)
-{
-        struct pollfd *ufds;
-        double phase = 0;
-        signed short *ptr;
-        int err, count, cptr, init;
-        count = snd_pcm_poll_descriptors_count (handle);
-        if (count <= 0) {
-                printf("Invalid poll descriptors count\n");
-                return count;
-        }
-        ufds = malloc(sizeof(struct pollfd) * count);
-        if (ufds == NULL) {
-                printf("No enough memory\n");
-                return -ENOMEM;
-        }
-        if ((err = snd_pcm_poll_descriptors(handle, ufds, count)) < 0) {
-                printf("Unable to obtain poll descriptors for playback: %s\n", snd_strerror(err));
-                return err;
-        }
-        init = 1;
-        while (1) {
-                if (!init) {
-                        err = wait_for_poll(handle, ufds, count);
-                        if (err < 0) {
-                                if (snd_pcm_state(handle) == SND_PCM_STATE_XRUN ||
-                                    snd_pcm_state(handle) == SND_PCM_STATE_SUSPENDED) {
-                                        err = snd_pcm_state(handle) == SND_PCM_STATE_XRUN ? -EPIPE : -ESTRPIPE;
-                                        if (xrun_recovery(handle, err) < 0) {
-                                                printf("Write error: %s\n", snd_strerror(err));
-                                                exit(EXIT_FAILURE);
-                                        }
-                                        init = 1;
-                                } else {
-                                        printf("Wait for poll failed\n");
-                                        return err;
-                                }
-                        }
-                }
-                generate_sine(areas, 0, period_size, &phase);
-                ptr = samples;
-                cptr = period_size;
-                while (cptr > 0) {
-                        err = snd_pcm_writei(handle, ptr, cptr);
-                        if (err < 0) {
-                                if (xrun_recovery(handle, err) < 0) {
-                                        printf("Write error: %s\n", snd_strerror(err));
-                                        exit(EXIT_FAILURE);
-                                }
-                                init = 1;
-                                break;  /* skip one period */
-                        }
-                        if (snd_pcm_state(handle) == SND_PCM_STATE_RUNNING)
-                                init = 0;
-                        ptr += err * channels;
-                        cptr -= err;
-                        if (cptr == 0)
-                                break;
-                        /* it is possible, that the initial buffer cannot store */
-                        /* all data from the last period, so wait awhile */
-                        err = wait_for_poll(handle, ufds, count);
-                        if (err < 0) {
-                                if (snd_pcm_state(handle) == SND_PCM_STATE_XRUN ||
-                                    snd_pcm_state(handle) == SND_PCM_STATE_SUSPENDED) {
-                                        err = snd_pcm_state(handle) == SND_PCM_STATE_XRUN ? -EPIPE : -ESTRPIPE;
-                                        if (xrun_recovery(handle, err) < 0) {
-                                                printf("Write error: %s\n", snd_strerror(err));
-                                                exit(EXIT_FAILURE);
-                                        }
-                                        init = 1;
-                                } else {
-                                        printf("Wait for poll failed\n");
-                                        return err;
-                                }
-                        }
-                }
-        }
-}
-
-/*
  *   Transfer method - asynchronous notification
  */
 struct async_private_data {
@@ -431,135 +334,6 @@ static int async_loop(snd_pcm_t *handle,
                         printf("Start error: %s\n", snd_strerror(err));
                         exit(EXIT_FAILURE);
                 }
-        }
-        /* because all other work is done in the signal handler,
-           suspend the process */
-        while (1) {
-                sleep(1);
-        }
-}
-
-/*
- *   Transfer method - asynchronous notification + direct write
- */
-static void async_direct_callback(snd_async_handler_t *ahandler)
-{
-        snd_pcm_t *handle = snd_async_handler_get_pcm(ahandler);
-        struct async_private_data *data = snd_async_handler_get_callback_private(ahandler);
-        const snd_pcm_channel_area_t *my_areas;
-        snd_pcm_uframes_t offset, frames, size;
-        snd_pcm_sframes_t avail, commitres;
-        snd_pcm_state_t state;
-        int first = 0, err;
-
-        while (1) {
-                state = snd_pcm_state(handle);
-                if (state == SND_PCM_STATE_XRUN) {
-                        err = xrun_recovery(handle, -EPIPE);
-                        if (err < 0) {
-                                printf("XRUN recovery failed: %s\n", snd_strerror(err));
-                                exit(EXIT_FAILURE);
-                        }
-                        first = 1;
-                } else if (state == SND_PCM_STATE_SUSPENDED) {
-                        err = xrun_recovery(handle, -ESTRPIPE);
-                        if (err < 0) {
-                                printf("SUSPEND recovery failed: %s\n", snd_strerror(err));
-                                exit(EXIT_FAILURE);
-                        }
-                }
-                avail = snd_pcm_avail_update(handle);
-                if (avail < 0) {
-                        err = xrun_recovery(handle, avail);
-                        if (err < 0) {
-                                printf("avail update failed: %s\n", snd_strerror(err));
-                                exit(EXIT_FAILURE);
-                        }
-                        first = 1;
-                        continue;
-                }
-                if (avail < period_size) {
-                        if (first) {
-                                first = 0;
-                                err = snd_pcm_start(handle);
-                                if (err < 0) {
-                                        printf("Start error: %s\n", snd_strerror(err));
-                                        exit(EXIT_FAILURE);
-                                }
-                        } else {
-                                break;
-                        }
-                        continue;
-                }
-                size = period_size;
-                while (size > 0) {
-                        frames = size;
-                        err = snd_pcm_mmap_begin(handle, &my_areas, &offset, &frames);
-                        if (err < 0) {
-                                if ((err = xrun_recovery(handle, err)) < 0) {
-                                        printf("MMAP begin avail error: %s\n", snd_strerror(err));
-                                        exit(EXIT_FAILURE);
-                                }
-                                first = 1;
-                        }
-                        generate_sine(my_areas, offset, frames, &data->phase);
-                        commitres = snd_pcm_mmap_commit(handle, offset, frames);
-                        if (commitres < 0 || (snd_pcm_uframes_t)commitres != frames) {
-                                if ((err = xrun_recovery(handle, commitres >= 0 ? -EPIPE : commitres)) < 0) {
-                                        printf("MMAP commit error: %s\n", snd_strerror(err));
-                                        exit(EXIT_FAILURE);
-                                }
-                                first = 1;
-                        }
-                        size -= frames;
-                }
-        }
-}
-
-static int async_direct_loop(snd_pcm_t *handle,
-                             signed short *samples ATTRIBUTE_UNUSED,
-                             snd_pcm_channel_area_t *areas ATTRIBUTE_UNUSED)
-{
-        struct async_private_data data;
-        snd_async_handler_t *ahandler;
-        const snd_pcm_channel_area_t *my_areas;
-        snd_pcm_uframes_t offset, frames, size;
-        snd_pcm_sframes_t commitres;
-        int err, count;
-        data.samples = NULL;    /* we do not require the global sample area for direct write */
-        data.areas = NULL;      /* we do not require the global areas for direct write */
-        data.phase = 0;
-        err = snd_async_add_pcm_handler(&ahandler, handle, async_direct_callback, &data);
-        if (err < 0) {
-                printf("Unable to register async handler\n");
-                exit(EXIT_FAILURE);
-        }
-        for (count = 0; count < 2; count++) {
-                size = period_size;
-                while (size > 0) {
-                        frames = size;
-                        err = snd_pcm_mmap_begin(handle, &my_areas, &offset, &frames);
-                        if (err < 0) {
-                                if ((err = xrun_recovery(handle, err)) < 0) {
-                                        printf("MMAP begin avail error: %s\n", snd_strerror(err));
-                                        exit(EXIT_FAILURE);
-                                }
-                        }
-                        generate_sine(my_areas, offset, frames, &data.phase);
-                        commitres = snd_pcm_mmap_commit(handle, offset, frames);
-                        if (commitres < 0 || (snd_pcm_uframes_t)commitres != frames) {
-                                if ((err = xrun_recovery(handle, commitres >= 0 ? -EPIPE : commitres)) < 0) {
-                                        printf("MMAP commit error: %s\n", snd_strerror(err));
-                                        exit(EXIT_FAILURE);
-                                }
-                        }
-                        size -= frames;
-                }
-        }
-        err = snd_pcm_start(handle);
-        if (err < 0) {
-                printf("Start error: %s\n", snd_strerror(err));
-                exit(EXIT_FAILURE);
         }
         /* because all other work is done in the signal handler,
            suspend the process */
@@ -653,37 +427,6 @@ static int direct_loop(snd_pcm_t *handle,
 }
 
 /*
- *   Transfer method - direct write only using mmap_write functions
- */
-static int direct_write_loop(snd_pcm_t *handle,
-                             signed short *samples,
-                             snd_pcm_channel_area_t *areas)
-{
-        double phase = 0;
-        signed short *ptr;
-        int err, cptr;
-        while (1) {
-                generate_sine(areas, 0, period_size, &phase);
-                ptr = samples;
-                cptr = period_size;
-                while (cptr > 0) {
-                        err = snd_pcm_mmap_writei(handle, ptr, cptr);
-                        if (err == -EAGAIN)
-                                continue;
-                        if (err < 0) {
-                                if (xrun_recovery(handle, err) < 0) {
-                                        printf("Write error: %s\n", snd_strerror(err));
-                                        exit(EXIT_FAILURE);
-                                }
-                                break;  /* skip one period */
-                        }
-                        ptr += err * channels;
-                        cptr -= err;
-                }
-        }
-}
-
-/*
  *
  */
 struct transfer_method {
@@ -696,12 +439,9 @@ struct transfer_method {
 
 static struct transfer_method transfer_methods[] = {
         { "write", SND_PCM_ACCESS_RW_INTERLEAVED, write_loop },
-        { "write_and_poll", SND_PCM_ACCESS_RW_INTERLEAVED, write_and_poll_loop },
         { "async", SND_PCM_ACCESS_RW_INTERLEAVED, async_loop },
-        { "async_direct", SND_PCM_ACCESS_MMAP_INTERLEAVED, async_direct_loop },
         { "direct_interleaved", SND_PCM_ACCESS_MMAP_INTERLEAVED, direct_loop },
         { "direct_noninterleaved", SND_PCM_ACCESS_MMAP_NONINTERLEAVED, direct_loop },
-        { "direct_write", SND_PCM_ACCESS_MMAP_INTERLEAVED, direct_write_loop },
         { NULL, SND_PCM_ACCESS_RW_INTERLEAVED, NULL }
 };
 static void help(void)
