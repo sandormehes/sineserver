@@ -87,7 +87,8 @@ static void generate_sine(const snd_pcm_channel_area_t *areas,
                 phase += step;
                 if (phase >= max_phase)
                         phase -= max_phase;
-        }
+          }
+
         *_phase = phase;
 }
 
@@ -449,20 +450,20 @@ static void help(void)
         int k;
         printf(
 "Usage: pcm [OPTION]... [FILE]...\n"
-"-h,--help        help\n"
-"-D,--device      playback device\n"
-"-r,--rate        stream rate in Hz\n"
-"-c,--channels    count of channels in stream\n"
-"-f,--frequency   sine wave frequency in Hz\n"
-"-b,--buffer      ring buffer size in us\n"
-"-p,--period      period size in us\n"
-"-m,--method      transfer method\n"
-"-o,--format      sample format\n"
-"-v,--verbose     show the PCM setup parameters\n"
-"-n,--noresample  do not resample\n"
-"-e,--pevent      enable poll event after each period\n"
-"-A,--address     public ip address\n"
-"-P,--port        public port number\n"
+"-h,--help            help\n"
+"-D,--device          playback device\n"
+"-r,--rate            stream rate in Hz\n"
+"-c,--channels        count of channels in stream\n"
+"-f,--frequency       sine wave frequency in Hz\n"
+"-b,--buffer          ring buffer size in us\n"
+"-p,--period          period size in us\n"
+"-m,--method          transfer method\n"
+"-o,--format          sample format\n"
+"-v,--verbose         show the PCM setup parameters\n"
+"-n,--noresample      do not resample\n"
+"-e,--pevent          enable poll event after each period\n"
+"-A,--address         public ip address\n"
+"-P,--port            public port number\n"
 "----------------------------------------------------\n"
 "\n");
         printf("Recognized sample formats are:\n");
