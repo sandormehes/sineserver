@@ -21,5 +21,6 @@
 #define   PACKETSIZE 16384
 #define	  MIN_PORT 1024
 #define   MAX_PORT 65535
+#define   NELEMS(x)  (sizeof(x) / sizeof((x)[0]))
 
 #endif //SINESERVER_H_

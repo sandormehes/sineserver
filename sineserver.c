@@ -19,7 +19,7 @@ static unsigned int rate = 192000;                      /* stream rate */
 static unsigned int channels = 2;                       /* count of channels */
 static unsigned int buffer_time = 500000;               /* ring buffer length in us */
 static unsigned int period_time = 100000;               /* period time in us */
-static double freq = 261.626;                               /* sinusoidal wave frequency in Hz */
+static double freq = 261.626;                           /* sinusoidal wave frequency in Hz */
 static int verbose = 1;                                 /* verbose flag */
 static int resample = 1;                                /* enable alsa-lib resampling */
 static int period_event = 0;                            /* produce poll event after each period */
@@ -239,6 +239,68 @@ static int xrun_recovery(snd_pcm_t *handle, int err)
 }
 
 /*
+ *   Transfer method - multicast
+ */
+
+static int mcast_loop(snd_pcm_t *handle,
+                      signed short *samples,
+                      snd_pcm_channel_area_t *areas)
+{
+        double phase = 0;
+        signed short *ptr;
+        int err, cptr;
+        while (1) {
+          generate_sine(areas, 0, period_size, &phase);
+          ptr = samples;
+          cptr = period_size;
+          while (cptr > 0) {
+            err = snd_pcm_writei(handle, ptr, cptr);
+            if (err == -EAGAIN) {
+              continue;
+            }
+            if (err < 0) {
+              if (xrun_recovery(handle, err) < 0) {
+                printf("Write error: %s\n", snd_strerror(err));
+                exit(EXIT_FAILURE);
+              }
+              break;
+            }
+            ptr += err * channels;
+            cptr -= err;
+          }
+        }
+}
+
+static int ucast_loop(snd_pcm_t *handle,
+                      signed short *samples,
+                      snd_pcm_channel_area_t *areas)
+{
+        double phase = 0;
+        signed short *ptr;
+        int err, cptr;
+        while (1) {
+          generate_sine(areas, 0, period_size, &phase);
+          ptr = samples;
+          cptr = period_size;
+          while (cptr > 0) {
+            err = snd_pcm_writei(handle, ptr, cptr);
+            if (err == -EAGAIN) {
+              continue;
+            }
+            if (err < 0) {
+              if (xrun_recovery(handle, err) < 0) {
+                printf("Write error: %s\n", snd_strerror(err));
+                exit(EXIT_FAILURE);
+              }
+              break;
+            }
+            ptr += err * channels;
+            cptr -= err;
+          }
+        }
+}
+
+/*
  *   Transfer method - write only
  */
 static int write_loop(snd_pcm_t *handle,
@@ -270,164 +332,6 @@ static int write_loop(snd_pcm_t *handle,
 }
 
 /*
- *   Transfer method - asynchronous notification
- */
-struct async_private_data {
-        signed short *samples;
-        snd_pcm_channel_area_t *areas;
-        double phase;
-};
-static void async_callback(snd_async_handler_t *ahandler)
-{
-        snd_pcm_t *handle = snd_async_handler_get_pcm(ahandler);
-        struct async_private_data *data = snd_async_handler_get_callback_private(ahandler);
-        signed short *samples = data->samples;
-        snd_pcm_channel_area_t *areas = data->areas;
-        snd_pcm_sframes_t avail;
-        int err;
-
-        avail = snd_pcm_avail_update(handle);
-        while (avail >= period_size) {
-                generate_sine(areas, 0, period_size, &data->phase);
-                err = snd_pcm_writei(handle, samples, period_size);
-                if (err < 0) {
-                        printf("Write error: %s\n", snd_strerror(err));
-                        exit(EXIT_FAILURE);
-                }
-                if (err != period_size) {
-                        printf("Write error: written %i expected %li\n", err, period_size);
-                        exit(EXIT_FAILURE);
-                }
-                avail = snd_pcm_avail_update(handle);
-        }
-}
-
-static int async_loop(snd_pcm_t *handle,
-                      signed short *samples,
-                      snd_pcm_channel_area_t *areas)
-{
-        struct async_private_data data;
-        snd_async_handler_t *ahandler;
-        int err, count;
-        data.samples = samples;
-        data.areas = areas;
-        data.phase = 0;
-        err = snd_async_add_pcm_handler(&ahandler, handle, async_callback, &data);
-        if (err < 0) {
-                printf("Unable to register async handler\n");
-                exit(EXIT_FAILURE);
-        }
-        for (count = 0; count < 2; count++) {
-                generate_sine(areas, 0, period_size, &data.phase);
-                err = snd_pcm_writei(handle, samples, period_size);
-                if (err < 0) {
-                        printf("Initial write error: %s\n", snd_strerror(err));
-                        exit(EXIT_FAILURE);
-                }
-                if (err != period_size) {
-                        printf("Initial write error: written %i expected %li\n", err, period_size);
-                        exit(EXIT_FAILURE);
-                }
-        }
-        if (snd_pcm_state(handle) == SND_PCM_STATE_PREPARED) {
-                err = snd_pcm_start(handle);
-                if (err < 0) {
-                        printf("Start error: %s\n", snd_strerror(err));
-                        exit(EXIT_FAILURE);
-                }
-        }
-        /* because all other work is done in the signal handler,
-           suspend the process */
-        while (1) {
-                sleep(1);
-        }
-}
-
-/*
- *   Transfer method - direct write only
- */
-static int direct_loop(snd_pcm_t *handle,
-                       signed short *samples ATTRIBUTE_UNUSED,
-                       snd_pcm_channel_area_t *areas ATTRIBUTE_UNUSED)
-{
-        double phase = 0;
-        const snd_pcm_channel_area_t *my_areas;
-        snd_pcm_uframes_t offset, frames, size;
-        snd_pcm_sframes_t avail, commitres;
-        snd_pcm_state_t state;
-        int err, first = 1;
-        while (1) {
-                state = snd_pcm_state(handle);
-                if (state == SND_PCM_STATE_XRUN) {
-                        err = xrun_recovery(handle, -EPIPE);
-                        if (err < 0) {
-                                printf("XRUN recovery failed: %s\n", snd_strerror(err));
-                                return err;
-                        }
-                        first = 1;
-                } else if (state == SND_PCM_STATE_SUSPENDED) {
-                        err = xrun_recovery(handle, -ESTRPIPE);
-                        if (err < 0) {
-                                printf("SUSPEND recovery failed: %s\n", snd_strerror(err));
-                                return err;
-                        }
-                }
-                avail = snd_pcm_avail_update(handle);
-                if (avail < 0) {
-                        err = xrun_recovery(handle, avail);
-                        if (err < 0) {
-                                printf("avail update failed: %s\n", snd_strerror(err));
-                                return err;
-                        }
-                        first = 1;
-                        continue;
-                }
-                if (avail < period_size) {
-                        if (first) {
-                                first = 0;
-                                err = snd_pcm_start(handle);
-                                if (err < 0) {
-                                        printf("Start error: %s\n", snd_strerror(err));
-                                        exit(EXIT_FAILURE);
-                                }
-                        } else {
-                                err = snd_pcm_wait(handle, -1);
-                                if (err < 0) {
-                                        if ((err = xrun_recovery(handle, err)) < 0) {
-                                                printf("snd_pcm_wait error: %s\n", snd_strerror(err));
-                                                exit(EXIT_FAILURE);
-                                        }
-                                        first = 1;
-                                }
-                        }
-                        continue;
-                }
-                size = period_size;
-                while (size > 0) {
-                        frames = size;
-                        err = snd_pcm_mmap_begin(handle, &my_areas, &offset, &frames);
-                        if (err < 0) {
-                                if ((err = xrun_recovery(handle, err)) < 0) {
-                                        printf("MMAP begin avail error: %s\n", snd_strerror(err));
-                                        exit(EXIT_FAILURE);
-                                }
-                                first = 1;
-                        }
-                        generate_sine(my_areas, offset, frames, &phase);
-                        commitres = snd_pcm_mmap_commit(handle, offset, frames);
-                        if (commitres < 0 || (snd_pcm_uframes_t)commitres != frames) {
-                                if ((err = xrun_recovery(handle, commitres >= 0 ? -EPIPE : commitres)) < 0) {
-                                        printf("MMAP commit error: %s\n", snd_strerror(err));
-                                        exit(EXIT_FAILURE);
-                                }
-                                first = 1;
-                        }
-                        size -= frames;
-                }
-        }
-}
-
-/*
  *
  */
 struct transfer_method {
@@ -439,40 +343,40 @@ struct transfer_method {
 };
 
 static struct transfer_method transfer_methods[] = {
+        {"unicast", SND_PCM_ACCESS_RW_INTERLEAVED, ucast_loop},
+        { "multicast", SND_PCM_ACCESS_RW_INTERLEAVED, mcast_loop},
         { "write", SND_PCM_ACCESS_RW_INTERLEAVED, write_loop },
-        { "async", SND_PCM_ACCESS_RW_INTERLEAVED, async_loop },
-        { "direct_interleaved", SND_PCM_ACCESS_MMAP_INTERLEAVED, direct_loop },
-        { "direct_noninterleaved", SND_PCM_ACCESS_MMAP_NONINTERLEAVED, direct_loop },
         { NULL, SND_PCM_ACCESS_RW_INTERLEAVED, NULL }
 };
 static void help(void)
 {
         int k;
         printf(
-"Usage: pcm [OPTION]... [FILE]...\n"
-"-h,--help            help\n"
-"-D,--device          playback device\n"
-"-r,--rate            stream rate in Hz\n"
-"-c,--channels        count of channels in stream\n"
-"-f,--frequency       sine wave frequency in Hz\n"
-"-b,--buffer          ring buffer size in us\n"
-"-p,--period          period size in us\n"
-"-m,--method          transfer method\n"
-"-o,--format          sample format\n"
-"-v,--verbose         show the PCM setup parameters\n"
-"-n,--noresample      do not resample\n"
-"-e,--pevent          enable poll event after each period\n"
-"-A,--address         public ip address\n"
-"-P,--port            public port number\n"
-"----------------------------------------------------\n"
-"\n");
+          "Usage: pcm [OPTION]... [FILE]...\n"
+          "\n"
+          "-h,--help            help\n"
+          "-D,--device          playback device\n"
+          "-r,--rate            stream rate in Hz\n"
+          "-c,--channels        count of channels in stream\n"
+          "-f,--frequency       sine wave frequency in Hz\n"
+          "-b,--buffer          ring buffer size in us\n"
+          "-p,--period          period size in us\n"
+          "-m,--method          transfer method\n"
+          "-o,--format          sample format\n"
+          "-v,--verbose         show the PCM setup parameters\n"
+          "-n,--noresample      do not resample\n"
+          "-e,--pevent          enable poll event after each period\n"
+          "-A,--address         public ip address\n"
+          "-P,--port            public port number\n"
+          "--------------------------------------------------------\n"
+          "\n");
         printf("Recognized sample formats are:\n");
         for (k = 0; k < SND_PCM_FORMAT_LAST; ++k) {
                 const char *s = snd_pcm_format_name(k);
                 if (s)
                         printf(" %s,", s);
         }
-        printf("\n----------------------------------------------------\n\n");
+        printf("\n--------------------------------------------------------\n\n");
 
         printf("Recognized transfer methods are:\n");
         for (k = 0; transfer_methods[k].name; k++)
