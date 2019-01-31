@@ -241,7 +241,6 @@ static int xrun_recovery(snd_pcm_t *handle, int err)
 /*
  *   Transfer method - multicast
  */
-
 static int mcast_loop(snd_pcm_t *handle,
                       signed short *samples,
                       snd_pcm_channel_area_t *areas)
@@ -255,6 +254,7 @@ static int mcast_loop(snd_pcm_t *handle,
           cptr = period_size;
           while (cptr > 0) {
             err = snd_pcm_writei(handle, ptr, cptr);
+            // printf("%d\n", err);
             if (err == -EAGAIN) {
               continue;
             }
@@ -284,6 +284,7 @@ static int ucast_loop(snd_pcm_t *handle,
           cptr = period_size;
           while (cptr > 0) {
             err = snd_pcm_writei(handle, ptr, cptr);
+            printf("%d\n", cptr);
             if (err == -EAGAIN) {
               continue;
             }
@@ -343,8 +344,8 @@ struct transfer_method {
 };
 
 static struct transfer_method transfer_methods[] = {
-        {"unicast", SND_PCM_ACCESS_RW_INTERLEAVED, ucast_loop},
-        { "multicast", SND_PCM_ACCESS_RW_INTERLEAVED, mcast_loop},
+        { "multicast", SND_PCM_ACCESS_RW_INTERLEAVED, mcast_loop },
+        { "unicast", SND_PCM_ACCESS_RW_INTERLEAVED, ucast_loop },
         { "write", SND_PCM_ACCESS_RW_INTERLEAVED, write_loop },
         { NULL, SND_PCM_ACCESS_RW_INTERLEAVED, NULL }
 };
