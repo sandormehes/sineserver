@@ -10,7 +10,7 @@ int sock = -1;
 struct in_addr interface_addr;
 struct sockaddr_in mc_addr = {0};
 const char* mc_addr_str = NULL;
-int mc_port = 2305;
+static int mc_port = 2305;
 
 // audio variables ************************************************************
 static char *device = "plughw:0,0";                     /* playback device */
@@ -250,10 +250,14 @@ static int mcast_loop(snd_pcm_t *handle,
         int err, cptr;
         while (1) {
           generate_sine(areas, 0, period_size, &phase);
-          ptr = samples;
-          cptr = period_size;
+          ptr = samples;        // PCM Data
+          cptr = period_size;   // number of frames
           while (cptr > 0) {
             err = snd_pcm_writei(handle, ptr, cptr);
+            size_t n = NELEMS(ptr);
+            for (size_t i = 0; i < n; i++) {
+              printf("%hd\n", ptr[n]);
+            }
             // printf("%d\n", err);
             if (err == -EAGAIN) {
               continue;
@@ -284,7 +288,6 @@ static int ucast_loop(snd_pcm_t *handle,
           cptr = period_size;
           while (cptr > 0) {
             err = snd_pcm_writei(handle, ptr, cptr);
-            printf("%d\n", cptr);
             if (err == -EAGAIN) {
               continue;
             }
@@ -316,7 +319,7 @@ static int write_loop(snd_pcm_t *handle,
                 ptr = samples;
                 cptr = period_size;
                 while (cptr > 0) {
-                        err = snd_pcm_writei(handle, ptr, cptr);
+                        err = snd_pcm_writei(handle, ptr, cptr); // write pcm data to the soundcard
                         if (err == -EAGAIN)
                                 continue;
                         if (err < 0) {
